@@ -9,35 +9,13 @@ from torch import optim
 import torch.nn as nn
 from unet_model import UNet
 from tqdm import tqdm
+import argparse 
 
-train_img_dir = "/Users/breenda/Desktop/unet/imgs/train"
-train_mask_dir = "/Users/breenda/Desktop/unet/masks/train"
-valid_img_dir = "/Users/breenda/Desktop/unet/imgs/val"
-valid_mask_dir = "/Users/breenda/Desktop/unet/masks/val"
+# train_img_dir = "/Users/breenda/Desktop/unet/imgs/train"
+# train_mask_dir = "/Users/breenda/Desktop/unet/masks/train"
+# valid_img_dir = "/Users/breenda/Desktop/unet/imgs/val"
+# valid_mask_dir = "/Users/breenda/Desktop/unet/masks/val"
 
-train_df = pd.DataFrame(columns=['img_file_name','mask_file_name','subdir'])
-valid_df = pd.DataFrame(columns=['img_file_name','mask_file_name','subdir'])
-
-for t, v in zip(os.listdir(train_img_dir), os.listdir(valid_img_dir)):
-    train_df = cityscapes_df(train_df, train_img_dir, train_mask_dir, t)
-    valid_df = cityscapes_df(valid_df, valid_img_dir, valid_mask_dir, v)
-
-train_df.to_csv("train_df.csv")
-valid_df.to_csv("valid_df.csv")
-
-train_dataset = cityscapes_dataset("train_df.csv", train_img_dir, train_mask_dir)
-valid_dataset = cityscapes_dataset("valid_df.csv", valid_img_dir, valid_mask_dir)
-
-train_dataloader = DataLoader(train_dataset, batch_size =1, shuffle=True, num_workers=0)
-valid_dataloader = DataLoader(valid_dataset, batch_size =1, shuffle=False, num_workers=0)
-
-learning_rate =  1e-5
-model = UNet(n_channels=3, n_classes=35, bilinear=False)
-# print(model)
-n_train = len(train_df)
-batch_size = 32
-optimizer = optim.RMSprop(model.parameters(), lr=learning_rate, weight_decay=1e-8, momentum=0.9)
-criterion = nn.CrossEntropyLoss()
 
 
 def evaluate(model, device, dataloader):
@@ -97,7 +75,42 @@ def train(device,epochs):
 
 
 if __name__ == '__main__':
+    
+    parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
+    parser.add_argument('--train_img_dir', '-ti', type=str, default="", help='Train Image Dir')
+    parser.add_argument('--train_mask_dir', '-tm', type=str, default="", help='Train Mask Dir')
+    parser.add_argument('--valid_img_dir', '-vi',type=str, default="",help = "Valid Image Dir")
+    parser.add_argument('--valid_mask_dir', '-vm', type=str, default="", help='Valid Mask Dir')
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    args = parser.parse_args()
+
+    train_df = pd.DataFrame(columns=['img_file_name','mask_file_name','subdir'])
+    valid_df = pd.DataFrame(columns=['img_file_name','mask_file_name','subdir'])
+
+    for t, v in zip(os.listdir(args.train_img_dir), os.listdir(args.valid_img_dir)):
+        train_df = cityscapes_df(train_df, args.train_img_dir, args.train_mask_dir, t)
+        valid_df = cityscapes_df(valid_df, args.valid_img_dir, args.valid_mask_dir, v)
+
+
+    train_df.to_csv("train_df.csv")
+    valid_df.to_csv("valid_df.csv")
+
+    train_dataset = cityscapes_dataset("train_df.csv", args.train_img_dir, args.train_mask_dir)
+    valid_dataset = cityscapes_dataset("valid_df.csv", args.valid_img_dir, args.valid_mask_dir)
+
+    train_dataloader = DataLoader(train_dataset, batch_size =1, shuffle=True, num_workers=0)
+    valid_dataloader = DataLoader(valid_dataset, batch_size =1, shuffle=False, num_workers=0)
+
+    learning_rate =  1e-5
+    model = UNet(n_channels=3, n_classes=35, bilinear=False)
+    # print(model)
+    n_train = len(train_df)
+    batch_size = 32
+    optimizer = optim.RMSprop(model.parameters(), lr=learning_rate, weight_decay=1e-8, momentum=0.9)
+    criterion = nn.CrossEntropyLoss()
+
 
     train(epochs=100, device=device)
         
