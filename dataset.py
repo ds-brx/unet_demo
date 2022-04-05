@@ -1,57 +1,116 @@
 import os
-from matplotlib.animation import PillowWriter
 import torch
-from torch.utils.data import Dataset, DataLoader
-import pandas as pd
 import numpy as np
-import cv2
-import PIL
-from PIL import Image
+import pandas as pd
+from dataframe import cityscapes_df
+from dataset import cityscapes_dataset
+from torch.utils.data import DataLoader
+from torch import optim
+import torch.nn as nn
+from unet_model import UNet
+from tqdm import tqdm
+import argparse 
 
-imgs_train_folder = "/Users/breenda/Desktop/unet/imgs/train"
-masks_train_folder = "/Users/breenda/Desktop/unet/masks/train"
-
-class cityscapes_dataset(Dataset):
-
-    def __init__(self, cityscapes_df, img_dir, mask_dir, transform=None):
-
-        self.df = pd.read_csv(cityscapes_df, index_col=0)
-        self.img_dir = img_dir
-        self.mask_dir = mask_dir
-        self.transform = transform
-
-    @classmethod
-    def transform_mask(self,mask):
-        new_mask = mask[:,:,0]
-        class_Ids = np.array(range(-1, 34),dtype=int)
-        channels = np.array([np.full((mask.shape[0], mask.shape[1]), id) for id in class_Ids])
-        channels = np.array([(x==new_mask).astype(int) for x in channels])
-        return channels
+# train_img_dir = "/Users/breenda/Desktop/unet/imgs/train"
+# train_mask_dir = "/Users/breenda/Desktop/unet/masks/train"
+# valid_img_dir = "/Users/breenda/Desktop/unet/imgs/val"
+# valid_mask_dir = "/Users/breenda/Desktop/unet/masks/val"
 
 
-    def __len__(self):
-        return len(self.df)
 
-    def __getitem__(self, idx):
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
+def evaluate(model, device, dataloader):
+    print("Validating")
+    model.eval()
+    num_val_batches = len(dataloader)
+    for batch in tqdm(dataloader):
+        image, mask_true = batch['image'], batch['mask']
+        image = image.to(device=device, dtype=torch.float32)
+        mask_true = mask_true.to(device=device, dtype=torch.long)
+        with torch.no_grad():
+            mask_pred = model(image)
+            mask_true = mask_true[:,0,:,:]
+            loss = criterion(mask_pred, mask_true)
+            print("Valid Loss: {}".format(loss))
 
-        img_file = self.df.iloc[idx, 0]
-        image = cv2.imread(img_file)
-        image = image.transpose((2,0,1))
-        mask_file = self.df.iloc[idx, 1]
-        mask = cv2.imread(mask_file)
-        mask = self.transform_mask(mask)
-        sample = {'image':  torch.as_tensor(image.copy()).float().contiguous(), 'mask': torch.as_tensor(mask.copy()).long().contiguous()}
+    model.train()
+    return loss/num_val_batches
 
-        if self.transform:
-            sample = self.transform(sample)
+def train(device,epochs):
 
-        return sample
+    for epoch in range(epochs):
+        model.to(device=device)
+        model.train()
+        print("Training")
+        for batch in tqdm(train_dataloader):
+            images = batch['image']
+            true_masks = batch['mask']
+            # print(images.shape)
+            # print(true_masks.shape)
 
-if __name__ =="__main__":
-    cityscapes_df = "/Users/breenda/Desktop/unet/cityscapes_df.csv"
-    train_img_dir = "/Users/breenda/Desktop/unet/imgs/train"
-    train_mask_dir = "/Users/breenda/Desktop/unet/masks/train"
-    train_dataset = cityscapes_dataset(cityscapes_df, train_img_dir, train_mask_dir)
-    print(train_dataset[0])
+            assert images.shape[1] == model.n_channels, \
+            f'Network has been defined with {model.n_channels} input channels, ' \
+            f'but loaded images have {images.shape[1]} channels. Please check that ' \
+            'the images are loaded correctly.'
+
+            images = images.to(device=device, dtype=torch.float32)
+            true_masks = true_masks.to(device=device, dtype=torch.long)
+
+            masks_pred = model(images)
+            # print(masks_pred.shape)
+            # print(true_masks.shape)        
+
+            # masks_pred = torch.unsqueeze(masks_pred, 0)
+            true_masks = true_masks[:,0,:,:]
+            print(true_masks.shape)
+
+            # print(true_masks.shape) 
+            loss = criterion(masks_pred,device, true_masks)
+            print("Train Loss: {}".format(loss))
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+            if epoch%10 == 0:
+                val_score = evaluate(model, valid_dataloader)
+                print("Validation Loss: {}".format(val_score))
+
+
+if __name__ == '__main__':
+    
+    parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
+    parser.add_argument('--train_img_dir', '-ti', type=str, default="", help='Train Image Dir')
+    parser.add_argument('--train_mask_dir', '-tm', type=str, default="", help='Train Mask Dir')
+    parser.add_argument('--valid_img_dir', '-vi',type=str, default="",help = "Valid Image Dir")
+    parser.add_argument('--valid_mask_dir', '-vm', type=str, default="", help='Valid Mask Dir')
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    args = parser.parse_args()
+
+    train_df = pd.DataFrame(columns=['img_file_name','mask_file_name','subdir'])
+    valid_df = pd.DataFrame(columns=['img_file_name','mask_file_name','subdir'])
+
+    for t, v in zip(os.listdir(args.train_img_dir), os.listdir(args.valid_img_dir)):
+        train_df = cityscapes_df(train_df, args.train_img_dir, args.train_mask_dir, t)
+        valid_df = cityscapes_df(valid_df, args.valid_img_dir, args.valid_mask_dir, v)
+
+
+    train_df.to_csv("train_df.csv")
+    valid_df.to_csv("valid_df.csv")
+
+    train_dataset = cityscapes_dataset("train_df.csv", args.train_img_dir, args.train_mask_dir)
+    valid_dataset = cityscapes_dataset("valid_df.csv", args.valid_img_dir, args.valid_mask_dir)
+
+    train_dataloader = DataLoader(train_dataset, batch_size =1, shuffle=True, num_workers=0)
+    valid_dataloader = DataLoader(valid_dataset, batch_size =1, shuffle=False, num_workers=0)
+
+    learning_rate =  1e-5
+    model = UNet(n_channels=3, n_classes=35, bilinear=False)
+    # print(model)
+    n_train = len(train_df)
+    batch_size = 32
+    optimizer = optim.RMSprop(model.parameters(), lr=learning_rate, weight_decay=1e-8, momentum=0.9)
+    criterion = nn.CrossEntropyLoss()
+
+
+    train(epochs=100, device=device)
+        
